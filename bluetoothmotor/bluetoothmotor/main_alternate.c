@@ -20,6 +20,7 @@
 #include "usart_ATmega1284.h"
 #include "lcd.h"
 #include "pwm.h"
+#include "servo_motor_task.h`"
 
 //============== RTOS STUFF=======================
 void StartPulse(void (*func)(int), char* name, unsigned portBASE_TYPE Priority)
@@ -31,6 +32,9 @@ void StartPulse(void (*func)(int), char* name, unsigned portBASE_TYPE Priority)
 unsigned char lastInput = 0; // holds the LAST INPUT from UART
 unsigned char spd[11] = {140, 120, 100, 80, 60, 50, 40, 30, 20, 10, 0}; //slow to fast
 unsigned char speed = 255; // aka stop_motors()
+//unsigned char cameraPos = 0; // servo motor index
+enum cam_pos {CMIDDLE, CL90, CL45, CR45, CR90} cameraPos;
+unsigned char camPosChangedBool = 0;
 
 //============== Radio SM ========================
 enum input_states {IINIT, ILISTEN} instate;
@@ -44,6 +48,8 @@ void inputTick()
 			lastInput = NULL;
 			speed = 255;
 			instate = ILISTEN;
+			cameraPos = CMIDDLE;
+			camPosChangedBool = 0;
 			break;
 		case ILISTEN:
 			if (USART_HasReceived(1)) {
@@ -94,6 +100,29 @@ void inputTick()
 					case 'S':
 						lastInput = recv;
 						break;
+					case 'W':
+						cameraPos = CL90;
+						camPosChangedBool = 1;
+						break;
+					case 'U':
+						cameraPos = CL45;
+						camPosChangedBool = 1;
+						break;
+					case 'V':
+						cameraPos = CR45;
+						camPosChangedBool = 1;
+						break;
+					case 'X':
+						cameraPos = CR90;
+						camPosChangedBool = 1;
+						break;
+					case 'w':
+					case 'u':
+					case 'v':
+					case 'x':
+						cameraPos = CMIDDLE;
+						camPosChangedBool = 1;
+						break;
 					default:
 						break;
 				}
@@ -108,6 +137,7 @@ void inputTick()
 void inputTask()
 {
 	instate = IINIT;
+	cameraPos = CMIDDLE;
 	for(;;)
 	{
 		inputTick();
@@ -129,6 +159,7 @@ void motorTick()
 			stop_motors();
 			if (lastInput != 'S' && lastInput != NULL) {
 				motorstate = MMOVE;
+				
 			}
 			break;
 		case MMOVE:
@@ -188,62 +219,6 @@ void motorTick()
 			motorstate = MINIT;
 			break;
 	}
-	//switch(lastInput) {
-		//case 'S':
-			//motorstate = MSTOP;
-			//break;
-		//case 'F':
-			//motorstate = MFORW;
-			//break;
-		//case 'B':
-			//motorstate = MBACK;
-			//break;
-		//case 'L':
-			//break;
-		//case 'R':
-			//break;
-		//case '0':
-			//speed = spd[0];
-			//break;
-		//case '1':
-			//speed = spd[1];
-			//break;
-		//case '2':
-			//speed = spd[2];
-			//break;
-		//case '3':
-			//speed = spd[3];
-			//break;
-		//case '4':
-			//speed = spd[4];
-			//break;
-		//case '5':
-			//speed = spd[5];
-			//break;
-		//// technically we don't support speeds above 6
-		//case '6':
-			//speed = spd[5];
-			//break;
-		//case '7':
-			//speed = spd[5];
-			//break;
-		//case '8':
-			//speed = spd[5];
-			//break;
-		//case '9':
-			//speed = spd[5];
-			//break;
-		//case 'q':
-			//speed = spd[5];
-			//break;
-		//// disconnect
-		//case 'D':
-			////stop_motors();
-			//motorstate = MSTOP;
-			//break;
-		//default:
-			//break;
-	//}
 }
 
 void motorTask()
@@ -255,8 +230,66 @@ void motorTask()
 	}
 }
 
+//============== Servo SM =========================
+enum servo_states {SINIT, SIDLE, SMOVE} servostate;
+
+void servoTick()
+{
+	switch(servostate) {
+		case SINIT:
+			init_servo();
+			servo_middle();
+			motorstate = SMOVE;
+			break;
+		//case SIDLE:
+			//if (cameraPos)
+			//{
+			//}
+			//break;
+		case SMOVE:
+			if (camPosChangedBool)
+			{
+				switch(cameraPos) {
+					case CMIDDLE:
+					servo_middle();
+					break;
+					case CL90:
+					servo_left_90();
+					break;
+					case CR90:
+					servo_right_90();
+					break;
+					case CL45:
+					servo_left_45();
+					break;
+					case CR45:
+					servo_right_45();
+					break;
+					default:
+					servo_middle();
+					break;
+				}
+				camPosChangedBool = 0;
+			}
+			break;
+		default:
+			motorstate = SINIT;
+			break;
+	}
+}
+
+void servoTask()
+{
+	servostate = SINIT;
+	for(;;) {
+		servoTick();
+		vTaskDelay(100);
+	}
+}
+
 int main(void) {
 	
+	//b6 servo
 	// d6,d7 b3,b4for dc motor
 	// USART (bluetooth) - rx1(in), tx1(out) (d0 and d1)
 	DDRB = 0xFF;	PORTB = 0x00;
@@ -264,40 +297,7 @@ int main(void) {
 	
 	StartPulse(inputTask, "btlisten", 1);
 	StartPulse(motorTask, "driver", 1);
+	StartPulse(servoTask, "cammove", 1);
 	
 	return 0;
 }
-
-
-
-//
-//int main(void)
-//{
-	//DDRD = 0xE2; PORTD = 0x1D; // D0 = RX, D1 = TX, D5-D7 LCD control lines
-	//DDRC = 0xFF; PORTC = 0x00; // LCD data lines
-	//LCD_init();
-	//initUSART(0);
-	//
-	//StartPulse(inputTask, "btlisten", 1);
-	//
-	//unsigned char counter = 0;
-	////unsigned char muhBuffer[256];
-	//unsigned char input = 0;
-	//LCD_ClearScreen();
-	//LCD_DisplayString(1,"Hello");
-    //while (1) 
-    //{
-		//if (counter < 30) counter++;
-		//else{
-			//if (USART_HasReceived(0)){
-				//LCD_Cursor(1);
-				//input = USART_Receive(0);
-				////LCD_DisplayString(1,input);
-				//LCD_WriteData(input);
-			//}
-			//else LCD_ClearScreen();
-		//}
-		//_delay_ms(500);
-    //}
-//}
-
